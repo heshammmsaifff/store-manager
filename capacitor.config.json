@@ -1,0 +1,5 @@
+{
+  "appId": "com.example.coffeeapp",
+  "appName": "store-manager",
+  "webDir": "dist"
+}
