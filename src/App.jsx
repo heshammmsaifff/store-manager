@@ -1,6 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Lock, Unlock, Menu, X } from "lucide-react";
 import Swal from "sweetalert2";
+import { supabase } from "./lib/supabase";
+
 import GreenBags from "./pages/GreenBags";
 import TransferToRoastery from "./pages/TransferToRoastery";
 import Roasting from "./pages/Roasting";
@@ -11,8 +13,8 @@ export default function App() {
   const [activePage, setActivePage] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
-
-  const PASSWORD = "12345";
+  const [storedPassword, setStoredPassword] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   const pages = [
     { key: "green", label: "🏠 البن الأخضر", protected: true },
@@ -22,16 +24,36 @@ export default function App() {
     { key: "branchStock", label: "📦 الفروع" },
   ];
 
-  // ✅ نافذة إدخال الباسوورد باستخدام Swal
+  // ✅ تحميل الباسوورد من Supabase عند فتح الصفحة
+  useEffect(() => {
+    async function fetchPassword() {
+      const { data, error } = await supabase
+        .from("custom_pass")
+        .select("password")
+        .single();
+
+      if (error) {
+        console.error("خطأ في جلب كلمة المرور:", error);
+        Swal.fire({
+          icon: "error",
+          title: "حدث خطأ أثناء تحميل كلمة المرور",
+          text: "من فضلك تحقق من الاتصال بـ Supabase",
+        });
+      } else {
+        setStoredPassword(data.password);
+      }
+      setLoading(false);
+    }
+
+    fetchPassword();
+  }, []);
+
+  // ✅ نافذة إدخال الباسوورد
   const askForPassword = async (pageKey) => {
     const { value: password } = await Swal.fire({
       title: "🔐 كلمة المرور مطلوبة",
       input: "password",
       inputPlaceholder: "أدخل كلمة المرور",
-      inputAttributes: {
-        autocapitalize: "off",
-        autocorrect: "off",
-      },
       confirmButtonText: "تأكيد",
       cancelButtonText: "إلغاء",
       showCancelButton: true,
@@ -45,7 +67,7 @@ export default function App() {
 
     if (!password) return;
 
-    if (password === PASSWORD) {
+    if (password === storedPassword) {
       setIsUnlocked(true);
       setActivePage(pageKey);
       Swal.fire({
@@ -109,6 +131,14 @@ export default function App() {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen text-lg text-green-700">
+        جارِ تحميل البيانات...
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <Navbar
@@ -138,12 +168,10 @@ function Navbar({
   return (
     <nav className="bg-green-700 text-white shadow-md">
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-        {/* Logo */}
         <h1 className="text-lg font-bold cursor-pointer" onClick={onHomeClick}>
           إدارة المخزن و المحمصة
         </h1>
 
-        {/* زر الموبايل */}
         <button
           className="md:hidden p-2 rounded hover:bg-green-800"
           onClick={() => setMenuOpen(!menuOpen)}
@@ -151,7 +179,6 @@ function Navbar({
           {menuOpen ? <X size={22} /> : <Menu size={22} />}
         </button>
 
-        {/* روابط الديسكتوب */}
         <div className="hidden md:flex items-center gap-4">
           {pages.map((p) => (
             <button
@@ -175,7 +202,6 @@ function Navbar({
         </div>
       </div>
 
-      {/* قائمة الموبايل */}
       {menuOpen && (
         <div className="md:hidden bg-green-800 px-4 py-2 space-y-2">
           {pages.map((p) => (
