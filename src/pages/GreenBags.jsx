@@ -6,11 +6,9 @@ import Swal from "sweetalert2";
 // 💡 دالة مساعدة لتوليد جزء فريد من الـ timestamp
 const generateUniqueSuffix = () => {
   const now = new Date();
-  // تنسيق: YYMMDD_HHmmss_milliseconds
   const datePart = now.toISOString().slice(2, 10).replace(/-/g, ""); // YYMMDD
   const timePart = now.toTimeString().slice(0, 8).replace(/:/g, ""); // HHmmss
   const msPart = now.getMilliseconds().toString().padStart(3, "0");
-
   return `${datePart}_${timePart}_${msPart}`;
 };
 
@@ -24,14 +22,10 @@ export default function GreenBags() {
     count: "",
   });
   const [loading, setLoading] = useState(false);
-  const [fetching, setFetching] = useState(true);
   const [mainWarehouseId, setMainWarehouseId] = useState(null);
-  const [filterMonth, setFilterMonth] = useState("");
-  const [filterYear, setFilterYear] = useState("");
   const [totalBags, setTotalBags] = useState(0);
   const [totalWeight, setTotalWeight] = useState(0);
 
-  // 🫘 أنواع البن الأخضر
   const beanTypes = [
     { name: "اندونيسي", code: "IND", defaultWeight: 60 },
     { name: "اندونيسي XL", code: "INDXL", defaultWeight: 60 },
@@ -60,42 +54,34 @@ export default function GreenBags() {
     getMainWarehouse();
   }, []);
 
-  // 📦 تحميل الشوالات
-  async function fetchBags() {
-    setFetching(true);
+  // 📦 تحميل البيانات وتجميعها يدوياً
+  async function fetchAggregatedBags() {
+    const { data, error } = await supabase
+      .from("green_bags_summary") // استخدم الـ view بدل الجدول
+      .select("*")
+      .order("total_weight", { ascending: false }); // ترتيب حسب الوزن الكلي
 
-    let query = supabase
-      .from("green_bags")
-      .select("*, warehouses(name)")
-      .eq("status", "in_main")
-      .order("created_at", { ascending: false });
-
-    if (filterMonth && filterYear) {
-      const startDate = `${filterYear}-${filterMonth}-01`;
-      // هذا يحسب نهاية الشهر بشكل صحيح:
-      const endDate = new Date(filterYear, filterMonth, 0)
-        .toISOString()
-        .split("T")[0];
-      query = query
-        .gte("created_at", startDate)
-        .lte("created_at", `${endDate}T23:59:59`);
+    if (error) {
+      console.error("SUPABASE FETCH ERROR:", error);
+      setBags([]);
+      setTotalBags(0);
+      setTotalWeight(0);
+      return;
     }
 
-    const { data, error } = await query;
-    if (error) console.error(error);
-    else {
-      setBags(data || []);
-      const totalB = data?.length || 0;
-      const totalW = data?.reduce((sum, b) => sum + (b.weight_kg || 0), 0) || 0;
-      setTotalBags(totalB);
-      setTotalWeight(totalW);
-    }
-    setFetching(false);
+    setBags(data || []);
+
+    // تحديث الإجمالي
+    const totalB = data?.reduce((sum, b) => sum + parseInt(b.count), 0) || 0;
+    const totalW =
+      data?.reduce((sum, b) => sum + parseFloat(b.total_weight), 0) || 0;
+    setTotalBags(totalB);
+    setTotalWeight(totalW);
   }
 
   useEffect(() => {
-    fetchBags();
-  }, [filterMonth, filterYear]);
+    fetchAggregatedBags();
+  }, []);
 
   // 🔁 عند اختيار نوع البن
   function handleBeanTypeChange(e) {
@@ -139,8 +125,8 @@ export default function GreenBags() {
     const confirm = await Swal.fire({
       title: "تأكيد الإضافة",
       html: `هل تريد إضافة <b>${count}</b> شوال 
-				من نوع <b>${form.bean_type || "غير محدد"}</b>
-				بوزن <b>${weight} كجم</b> لكل شوال؟`,
+        من نوع <b>${form.bean_type || "غير محدد"}</b>
+        بوزن <b>${weight} كجم</b> لكل شوال؟`,
       icon: "question",
       showCancelButton: true,
       confirmButtonText: "نعم، أضفهم ✅",
@@ -151,12 +137,8 @@ export default function GreenBags() {
 
     if (!confirm.isConfirmed) return;
 
-    // 💡 التعديل هنا: توليد بادئة فريدة تعتمد على الوقت لضمان عدم تكرار bag_code
-    const uniquePrefix = generateUniqueSuffix();
-
-    const bagsToInsert = Array.from({ length: count }, (_, i) => ({
-      // صيغة bag_code الجديدة: [الكود الأساسي]_[تاريخ ووقت فريد]_[الرقم التسلسلي]
-      bag_code: `${form.bag_code}_${uniquePrefix}_${i + 1}`,
+    const allBags = Array.from({ length: count }, () => ({
+      bag_code: `${form.bag_code}_${crypto.randomUUID()}`,
       weight_kg: weight,
       bean_type: form.bean_type,
       notes: form.notes,
@@ -164,38 +146,44 @@ export default function GreenBags() {
       status: "in_main",
     }));
 
+    const chunkSize = 500;
+    const chunks = [];
+    for (let i = 0; i < allBags.length; i += chunkSize) {
+      chunks.push(allBags.slice(i, i + chunkSize));
+    }
+
     setLoading(true);
-    const { error } = await supabase.from("green_bags").insert(bagsToInsert);
+    for (const chunk of chunks) {
+      const { error } = await supabase.from("green_bags").insert(chunk);
+      if (error) {
+        console.error("SUPABASE INSERT ERROR:", error);
+        Swal.fire({
+          icon: "error",
+          title: "❌ خطأ أثناء الحفظ",
+          text: "حدث خطأ أثناء إضافة بعض الشوالات.",
+        });
+        setLoading(false);
+        return;
+      }
+    }
     setLoading(false);
 
-    if (error) {
-      console.error(error);
-      // مع الرمز الفريد الجديد، لن تظهر رسالة التكرار 23505، لكن نترك التنبيه العام
-      Swal.fire({
-        icon: "error",
-        title: "❌ خطأ أثناء الحفظ",
-        text:
-          error.message ||
-          "حدث خطأ غير متوقع، ربما الرمز الذي تحاول إدخاله مكرر. حاول مجدداً.",
-      });
-    } else {
-      Swal.fire({
-        icon: "success",
-        title: "تمت الإضافة بنجاح ✅",
-        text: `تمت إضافة ${count} شوال بنجاح.`,
-        timer: 2500,
-        showConfirmButton: false,
-      });
+    Swal.fire({
+      icon: "success",
+      title: "تمت الإضافة بنجاح ✅",
+      text: `تمت إضافة ${count} شوال بنجاح.`,
+      timer: 2500,
+      showConfirmButton: false,
+    });
 
-      setForm({
-        bag_code: "",
-        weight_kg: "",
-        bean_type: "",
-        notes: "",
-        count: "",
-      });
-      fetchBags();
-    }
+    setForm({
+      bag_code: "",
+      weight_kg: "",
+      bean_type: "",
+      notes: "",
+      count: "",
+    });
+    fetchAggregatedBags();
   }
 
   return (
@@ -215,9 +203,14 @@ export default function GreenBags() {
             {totalWeight.toFixed(2)} كجم
           </span>
         </div>
+        <div className="font-semibold text-green-700">
+          ⚖️ الوزن بالطن:{" "}
+          <span className="font-bold text-lg">
+            {(totalWeight / 1000).toFixed(2)} طن
+          </span>
+        </div>
       </div>
 
-      {/* نموذج الإضافة */}
       <form
         onSubmit={handleAdd}
         className="bg-white p-4 rounded-xl shadow mb-8 grid grid-cols-1 sm:grid-cols-2 gap-4"
@@ -257,7 +250,6 @@ export default function GreenBags() {
           placeholder="الوزن لكل شوال (كجم)"
           className="border p-2 rounded w-full bg-gray-100"
           value={form.weight_kg}
-          onChange={(e) => setForm({ ...form, weight_kg: e.target.value })}
           readOnly
         />
 
@@ -277,78 +269,45 @@ export default function GreenBags() {
         </button>
       </form>
 
-      {/* جدول العرض */}
       <div className="overflow-x-auto bg-white rounded-xl shadow border border-gray-100">
-        {fetching ? (
-          <p className="text-center py-6">⏳ جاري التحميل...</p>
+        {bags.length === 0 ? (
+          <p className="text-center py-6 text-gray-500">
+            لا توجد شوالات مسجلة في الوقت الحالي
+          </p>
         ) : (
-          (() => {
-            const grouped = bags.reduce((acc, bag) => {
-              const type = bag.bean_type || "غير محدد";
-              if (!acc[type]) {
-                acc[type] = {
-                  bean_type: type,
-                  count: 0,
-                  totalWeight: 0,
-                  notes: bag.notes || "",
-                };
-              }
-              acc[type].count += 1;
-              acc[type].totalWeight += bag.weight_kg || 0;
-              return acc;
-            }, {});
-
-            const groupedList = Object.values(grouped);
-
-            return (
-              <table className="w-full text-sm text-gray-700 min-w-[600px]">
-                <thead className="bg-green-600 text-white text-right">
-                  <tr>
-                    <th className="p-3 text-center">النوع</th>
-                    <th className="p-3 text-center">عدد الشوالات</th>
-                    <th className="p-3 text-center">إجمالي الوزن</th>
-                    <th className="p-3 text-center">الحالة</th>
-                    <th className="p-3 text-center">ملاحظات</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groupedList.length > 0 ? (
-                    groupedList.map((g, i) => (
-                      <tr
-                        key={g.bean_type}
-                        className={`border-t hover:bg-green-50 ${
-                          i % 2 === 0 ? "bg-white" : "bg-gray-50"
-                        }`}
-                      >
-                        <td className="p-3 text-center font-semibold text-green-700">
-                          {g.bean_type}
-                        </td>
-                        <td className="p-3 text-center">{g.count}</td>
-                        <td className="p-3 text-center">
-                          {g.totalWeight.toFixed(2)} كجم
-                        </td>
-                        <td className="p-3 text-center">
-                          <span className="px-2 py-1 rounded text-xs font-semibold bg-green-100 text-green-700">
-                            في المخزن الرئيسي
-                          </span>
-                        </td>
-                        <td className="p-3 text-center">{g.notes || "-"}</td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td
-                        colSpan="5"
-                        className="text-center py-6 text-gray-500"
-                      >
-                        لا توجد شوالات مسجلة في الوقت الحالي
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            );
-          })()
+          <table className="w-full text-sm text-gray-700 min-w-[600px]">
+            <thead className="bg-green-600 text-white text-right">
+              <tr>
+                <th className="p-3 text-center">النوع</th>
+                <th className="p-3 text-center">عدد الشوالات</th>
+                <th className="p-3 text-center">إجمالي الوزن</th>
+                <th className="p-3 text-center">الحالة</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bags.map((g, i) => (
+                <tr
+                  key={g.bean_type}
+                  className={`border-t hover:bg-green-50 ${
+                    i % 2 === 0 ? "bg-white" : "bg-gray-50"
+                  }`}
+                >
+                  <td className="p-3 text-center font-semibold text-green-700">
+                    {g.bean_type}
+                  </td>
+                  <td className="p-3 text-center">{g.count}</td>
+                  <td className="p-3 text-center">
+                    {g.total_weight.toFixed(2)} كجم
+                  </td>
+                  <td className="p-3 text-center">
+                    <span className="px-2 py-1 rounded text-xs font-semibold bg-green-100 text-green-700">
+                      في المخزن الرئيسي
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </main>
